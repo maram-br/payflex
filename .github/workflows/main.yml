@@ -1,0 +1,316 @@
+name: PayFlex CI/CD
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: payflex
+  PYTHON_VERSION: "3.12"
+
+# Chaîne séquentielle = Fail Fast :
+# secrets -> unit -> sonar -> integration -> performance -> deploy
+# Dès qu'un job échoue (erreur critique), les suivants sont annulés (skipped).
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1. Confidentialité : code, config, historique git + artefact Docker
+  # ---------------------------------------------------------------
+  secrets-scan:
+    name: 1 - Confidentialité (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Scan du code source, des fichiers de config et de l'historique
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" \
+            zricethezav/gitleaks:latest detect \
+            --source /repo --report-format json \
+            --report-path /repo/gitleaks.json --exit-code 0
+
+      - name: Construire l'image (artefact à analyser)
+        run: docker build -t "$IMAGE" .
+
+      - name: Extraire le contenu de l'image
+        run: |
+          docker create --name extract "$IMAGE"
+          mkdir -p artifact-content
+          docker cp extract:/app ./artifact-content/app
+          docker rm extract
+
+      - name: Scan de l'artefact (contenu de l'image)
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" \
+            zricethezav/gitleaks:latest detect --no-git \
+            --source /repo/artifact-content --report-format json \
+            --report-path /repo/gitleaks-artifacts.json --exit-code 0
+
+      - name: Gate - taux de confidentialité
+        run: python scripts/quality_gate.py secrets
+
+      - name: Rapports de confidentialité
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-secrets
+          if-no-files-found: ignore
+          path: |
+            gitleaks.json
+            gitleaks-artifacts.json
+            incident-report.md
+
+  # ---------------------------------------------------------------
+  # 2. Tests unitaires + couverture
+  # ---------------------------------------------------------------
+  unit:
+    name: 2 - Tests unitaires (PyTest)
+    needs: secrets-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Tests + couverture
+        run: python -m pytest --cov=app --cov-report=xml --cov-report=term
+
+      - name: Gate - couverture (70 / 80 %)
+        run: python scripts/quality_gate.py unit
+
+      - name: Rapports unitaires
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-report
+          if-no-files-found: ignore
+          path: |
+            coverage.xml
+            incident-report.md
+
+  # ---------------------------------------------------------------
+  # 3. Analyse statique SonarQube Community (lancé dans le job)
+  # ---------------------------------------------------------------
+  sonar:
+    name: 3 - Qualité (SonarQube Community)
+    needs: unit
+    runs-on: ubuntu-latest
+    env:
+      SONAR_HOST_URL: http://localhost:9000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Récupérer coverage.xml du job unitaire
+        uses: actions/download-artifact@v4
+        with:
+          name: unit-report
+
+      - name: Démarrer SonarQube Community
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          docker run -d --name sonarqube -p 9000:9000 sonarqube:community
+          for i in $(seq 1 60); do
+            if curl -s "$SONAR_HOST_URL/api/system/status" | grep -q '"status":"UP"'; then
+              echo "SonarQube prêt"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::SonarQube n'a pas démarré à temps"
+          docker logs sonarqube | tail -50
+          exit 1
+
+      - name: Configurer SonarQube (token + Quality Gate aligné sur le sujet)
+        run: |
+          # Mot de passe aléatoire, jamais écrit en clair dans le dépôt
+          PWD_ADMIN="$(openssl rand -hex 12)Aa1!"
+          echo "::add-mask::$PWD_ADMIN"
+
+          curl -sf -u admin:admin -X POST "$SONAR_HOST_URL/api/users/change_password" \
+            -d login=admin -d previousPassword=admin --data-urlencode "password=$PWD_ADMIN"
+
+          TOKEN=$(curl -sf -u "admin:$PWD_ADMIN" -X POST \
+            "$SONAR_HOST_URL/api/user_tokens/generate" -d name=ci \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+          echo "::add-mask::$TOKEN"
+          echo "SONAR_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+          API="$SONAR_HOST_URL/api/qualitygates"
+          AUTH="-u admin:$PWD_ADMIN -X POST"
+          curl -sf $AUTH "$API/create" -d name=PayFlex
+          # Critiques : couverture < 70 %, bug, vulnérabilité
+          curl -sf $AUTH "$API/create_condition" -d gateName=PayFlex -d metric=coverage        -d op=LT -d error=70
+          curl -sf $AUTH "$API/create_condition" -d gateName=PayFlex -d metric=bugs            -d op=GT -d error=0
+          curl -sf $AUTH "$API/create_condition" -d gateName=PayFlex -d metric=vulnerabilities -d op=GT -d error=0
+          curl -sf $AUTH "$API/set_as_default" -d name=PayFlex
+
+      - name: Analyse + attente du Quality Gate (Fail Fast)
+        id: scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+        with:
+          args: -Dsonar.qualitygate.wait=true
+
+      - name: Rapport d'incident Sonar
+        if: failure() && steps.scan.outcome == 'failure'
+        run: |
+          {
+            echo "# Rapport d'incident"
+            echo
+            echo "**Étape** : sonar"
+            echo
+            echo "- ❌ Quality Gate SonarQube en échec (couverture < 70 %, bug ou vulnérabilité)"
+          } | tee incident-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Avertissements non critiques (code smells, couverture 70-80 %)
+        if: always() && steps.scan.outcome != 'skipped'
+        run: |
+          curl -s -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/measures/component?component=payflex&metricKeys=code_smells,coverage,sqale_index,bugs,vulnerabilities" \
+            > sonar-measures.json || true
+          python3 scripts/sonar_warnings.py
+
+      - name: Rapports Sonar
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-report
+          if-no-files-found: ignore
+          path: |
+            sonar-measures.json
+            incident-report.md
+
+  # ---------------------------------------------------------------
+  # 4. Tests d'intégration : conteneur éphémère + Newman
+  # ---------------------------------------------------------------
+  integration:
+    name: 4 - Tests d'intégration (Docker + Newman)
+    needs: sonar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construire et lancer le conteneur éphémère
+        run: |
+          docker build -t "$IMAGE" .
+          docker run -d -p 8000:8000 --name payflex "$IMAGE"
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          echo "::error::L'API n'a pas démarré"
+          docker logs payflex
+          exit 1
+
+      - name: Scénario API (Newman)
+        run: |
+          npx --yes newman run postman/payflex.postman_collection.json \
+            --env-var baseUrl=http://127.0.0.1:8000 \
+            --reporters cli,json --reporter-json-export newman-report.json
+
+      - name: Rapport d'incident
+        if: failure()
+        run: |
+          {
+            echo "# Rapport d'incident"
+            echo
+            echo "**Étape** : integration"
+            echo
+            echo "- ❌ Échec du scénario d'intégration Newman (voir newman-report.json)"
+          } | tee incident-report.md >> "$GITHUB_STEP_SUMMARY"
+          docker logs payflex || true
+
+      - name: Détruire le conteneur
+        if: always()
+        run: docker rm -f payflex || true
+
+      - name: Rapports d'intégration
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-report
+          if-no-files-found: ignore
+          path: |
+            newman-report.json
+            incident-report.md
+
+  # ---------------------------------------------------------------
+  # 5. Tests de performance k6
+  # ---------------------------------------------------------------
+  performance:
+    name: 5 - Tests de performance (k6)
+    needs: integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Lancer l'API
+        run: |
+          docker build -t "$IMAGE" .
+          docker run -d -p 8000:8000 --name payflex "$IMAGE"
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          docker logs payflex
+          exit 1
+
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Tir de charge
+        run: k6 run -e BASE_URL=http://127.0.0.1:8000 perf/load.js
+
+      - name: Gate - latence p95 et taux d'erreurs
+        run: python scripts/quality_gate.py perf
+
+      - name: Arrêter l'API
+        if: always()
+        run: docker rm -f payflex || true
+
+      - name: Rapports de performance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report
+          if-no-files-found: ignore
+          path: |
+            k6-summary.json
+            incident-report.md
+
+  # ---------------------------------------------------------------
+  # 6. Déploiement (simulé) : uniquement si TOUT est vert
+  # ---------------------------------------------------------------
+  deploy:
+    name: 6 - Déploiement
+    needs: [secrets-scan, unit, sonar, integration, performance]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "🚀 Tous les critères sont au vert : déploiement simulé de PayFlex"
+          echo "## ✅ Pipeline réussi : déploiement autorisé" >> "$GITHUB_STEP_SUMMARY"

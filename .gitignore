@@ -7,3 +7,4 @@ gitleaks.json
 payflex.tar
 img/
 gitleaks-artifacts.json
+.env
