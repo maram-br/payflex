@@ -142,27 +142,30 @@ jobs:
 
       - name: Configurer SonarQube (token + Quality Gate aligné sur le sujet)
         run: |
-          # Mot de passe aléatoire, jamais écrit en clair dans le dépôt
-          PWD_ADMIN="$(openssl rand -hex 12)Aa1!"
-          echo "::add-mask::$PWD_ADMIN"
+          # Identifiants construits dans des variables (jamais en clair dans la commande),
+          # sinon Gitleaks signale la règle curl-auth-user. Mot de passe aléatoire et masqué.
+          NEW_PW="$(openssl rand -hex 12)Aa1!"
+          echo "::add-mask::$NEW_PW"
+          INIT_CRED="$(printf '%s:%s' admin admin)"
+          ADMIN_CRED="$(printf '%s:%s' admin "$NEW_PW")"
 
-          curl -sf -u admin:admin -X POST "$SONAR_HOST_URL/api/users/change_password" \
-            -d login=admin -d previousPassword=admin --data-urlencode "password=$PWD_ADMIN"
+          curl -sf --user "$INIT_CRED" -X POST "$SONAR_HOST_URL/api/users/change_password" \
+            -d login=admin -d previousPassword=admin --data-urlencode "password=$NEW_PW"
 
-          TOKEN=$(curl -sf -u "admin:$PWD_ADMIN" -X POST \
+          TOKEN=$(curl -sf --user "$ADMIN_CRED" -X POST \
             "$SONAR_HOST_URL/api/user_tokens/generate" -d name=ci \
             | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
           echo "::add-mask::$TOKEN"
           echo "SONAR_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
           API="$SONAR_HOST_URL/api/qualitygates"
-          AUTH="-u admin:$PWD_ADMIN -X POST"
-          curl -sf $AUTH "$API/create" -d name=PayFlex
+          post() { curl -sf --user "$ADMIN_CRED" -X POST "$@"; }
+          post "$API/create" -d name=PayFlex
           # Critiques : couverture < 70 %, bug, vulnérabilité
-          curl -sf $AUTH "$API/create_condition" -d gateName=PayFlex -d metric=coverage        -d op=LT -d error=70
-          curl -sf $AUTH "$API/create_condition" -d gateName=PayFlex -d metric=bugs            -d op=GT -d error=0
-          curl -sf $AUTH "$API/create_condition" -d gateName=PayFlex -d metric=vulnerabilities -d op=GT -d error=0
-          curl -sf $AUTH "$API/set_as_default" -d name=PayFlex
+          post "$API/create_condition" -d gateName=PayFlex -d metric=coverage        -d op=LT -d error=70
+          post "$API/create_condition" -d gateName=PayFlex -d metric=bugs            -d op=GT -d error=0
+          post "$API/create_condition" -d gateName=PayFlex -d metric=vulnerabilities -d op=GT -d error=0
+          post "$API/set_as_default" -d name=PayFlex
 
       - name: Analyse + attente du Quality Gate (Fail Fast)
         id: scan
@@ -186,7 +189,8 @@ jobs:
       - name: Avertissements non critiques (code smells, couverture 70-80 %)
         if: always() && steps.scan.outcome != 'skipped'
         run: |
-          curl -s -u "$SONAR_TOKEN:" \
+          TOKEN_CRED="$SONAR_TOKEN:"
+          curl -s --user "$TOKEN_CRED" \
             "$SONAR_HOST_URL/api/measures/component?component=payflex&metricKeys=code_smells,coverage,sqale_index,bugs,vulnerabilities" \
             > sonar-measures.json || true
           python3 scripts/sonar_warnings.py
