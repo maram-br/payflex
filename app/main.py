@@ -16,7 +16,6 @@ def health():
 
 @app.post("/payments", status_code=201)
 def create(p: Payment):
-    //time.sleep(0.6) 
     if p.amount <= 0:
         raise HTTPException(400, "Montant invalide")
     pid = str(uuid.uuid4())
