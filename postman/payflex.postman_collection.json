@@ -1,0 +1,89 @@
+{
+  "info": {
+    "name": "PayFlex API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health check",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Status 200', () => pm.response.to.have.status(200));",
+          "pm.test('Status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+        ]}
+      }],
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health"
+      }
+    },
+    {
+      "name": "Create payment",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Status 201', () => pm.response.to.have.status(201));",
+          "const body = pm.response.json();",
+          "pm.test('Has id', () => pm.expect(body).to.have.property('id'));",
+          "pm.test('Amount correct', () => pm.expect(body.amount).to.eql(75.5));",
+          "pm.collectionVariables.set('paymentId', body.id);"
+        ]}
+      }],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"account_id\": \"ACC-001\", \"amount\": 75.5, \"currency\": \"EUR\"}"
+        },
+        "url": "{{baseUrl}}/payments"
+      }
+    },
+    {
+      "name": "Get payment",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Status 200', () => pm.response.to.have.status(200));",
+          "pm.test('Same account', () => pm.expect(pm.response.json().account_id).to.eql('ACC-001'));"
+        ]}
+      }],
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/payments/{{paymentId}}"
+      }
+    },
+    {
+      "name": "Create payment - invalid amount",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Status 400', () => pm.response.to.have.status(400));"
+        ]}
+      }],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"account_id\": \"ACC-001\", \"amount\": -10}"
+        },
+        "url": "{{baseUrl}}/payments"
+      }
+    },
+    {
+      "name": "Get unknown payment",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Status 404', () => pm.response.to.have.status(404));"
+        ]}
+      }],
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/payments/unknown-id"
+      }
+    }
+  ]
+}
