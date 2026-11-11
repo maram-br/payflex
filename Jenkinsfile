@@ -76,7 +76,7 @@ for image in metadata:
     image["Config"]["Env"] = [
         item for item in environment if item.split("=", 1)[0] != "GPG_KEY"
     ]
-path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 PY
 
                     docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
