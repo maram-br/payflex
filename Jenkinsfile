@@ -63,6 +63,22 @@ pipeline {
                     docker inspect "payflex-extract-$BUILD_NUMBER" > artifact-content/image-metadata.json
                     docker rm "payflex-extract-$BUILD_NUMBER"
 
+                    # GPG_KEY est la clé publique de signature de l'image Python officielle.
+                    # Toutes les autres variables et métadonnées restent analysées.
+                    python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("artifact-content/image-metadata.json")
+metadata = json.loads(path.read_text(encoding="utf-8"))
+for image in metadata:
+    environment = image.get("Config", {}).get("Env", [])
+    image["Config"]["Env"] = [
+        item for item in environment if item.split("=", 1)[0] != "GPG_KEY"
+    ]
+path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+PY
+
                     docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
                         "$GITLEAKS_IMAGE" detect --no-git --source "$PWD/artifact-content" \
                         --config="$PWD/.gitleaks.toml" --report-format json \
