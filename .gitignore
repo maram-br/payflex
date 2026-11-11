@@ -8,7 +8,7 @@ reports/
 logs/
 source-content/
 artifact-content/
-payflex-image.tar
+tracked-source.tar
 payflex.tar
 img/
 gitleaks-artifacts.json

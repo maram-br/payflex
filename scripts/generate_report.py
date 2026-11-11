@@ -169,7 +169,7 @@ def architecture_diagram():
         (124, 46, "3. Qualité", "SonarQube", BLUE),
         (124, 16, "4. Intégration", "Docker + Newman", CYAN),
         (62, 16, "5. Performance", "k6 + Quality Gate", BLUE),
-        (0, 16, "6. Déploiement", "GHCR / main", GREEN),
+        (0, 16, "6. Déploiement", "Docker local / main", GREEN),
     ]
     for x_mm, y_mm, title, subtitle, color in positions:
         x, y = x_mm * mm, y_mm * mm
@@ -249,7 +249,7 @@ class ScreenshotPlaceholder(Flowable):
         canvas.roundRect(18 * mm, 7 * mm, self.width - 36 * mm, 9 * mm, 2 * mm, stroke=0, fill=1)
         canvas.setFillColor(MUTED)
         canvas.setFont("Helvetica-Oblique", 7.5)
-        canvas.drawCentredString(self.width / 2, 10.2 * mm, "Insérer ici la capture GitHub Actions après l'exécution du workflow corrigé")
+        canvas.drawCentredString(self.width / 2, 10.2 * mm, "Insérer ici la capture Jenkins après l'exécution du pipeline")
 
 
 story = []
@@ -260,7 +260,7 @@ story.extend(
         Spacer(1, 23 * mm),
         p("TP AVANCÉ", "SmallCustom"),
         p("Pipeline CI/CD intelligent &<br/>analyse de qualité / risque applicatif", "CoverTitle"),
-        p("PayFlex API — FastAPI, Docker, PyTest, Newman, k6, SonarQube et Gitleaks", "CoverSub"),
+        p("PayFlex API — Jenkins local, Docker, PyTest, Newman, k6, SonarQube et Gitleaks", "CoverSub"),
         Spacer(1, 7 * mm),
         Table(
             [
@@ -285,7 +285,7 @@ story.extend(
         ),
         Spacer(1, 22 * mm),
         p("Rapport de synthèse technique", "H2Custom"),
-        p("Version préparée le 11 novembre 2026. Le document décrit le pipeline implémenté et la procédure de preuve des trois scénarios demandés."),
+        p("Version Jenkins locale préparée le 11 novembre 2026. Le document décrit le pipeline et la procédure de preuve des trois scénarios demandés."),
         PageBreak(),
     ]
 )
@@ -294,18 +294,18 @@ story.extend(
 story.extend(
     [
         p("1. Architecture générale", "H1Custom"),
-        p("Le workflow est une chaîne séquentielle. Chaque job dépend du précédent avec <b>needs</b>. Un échec critique arrête donc la progression avant le déploiement."),
+        p("Le Jenkinsfile définit une chaîne de stages séquentiels. Un code de sortie critique arrête la progression avant le déploiement, sans dépendre d'un compte CI externe."),
         Spacer(1, 3 * mm),
         architecture_diagram(),
         Spacer(1, 4 * mm),
         p("Principe de l'artefact unique", "H2Custom"),
-        p("L'image Docker est construite une seule fois dans le premier job, puis exportée comme artefact. Newman, k6 et le déploiement chargent exactement cette image identifiée par le SHA du commit. Le code testé est ainsi identique au code publié."),
-        p("Déclencheurs", "H2Custom"),
-        bullet("<b>push</b> : exécute toute la CI ; un push sur main peut publier l'image."),
-        bullet("<b>pull_request</b> : valide le changement sans déployer."),
-        bullet("<b>workflow_dispatch</b> : permet d'exécuter les trois scénarios de démonstration."),
+        p("L'image Docker est construite une seule fois dans le premier stage. Newman, k6 et le déploiement réutilisent exactement cette image dans le même moteur Docker. Le code testé est ainsi identique au code déployé."),
+        p("Déclencheurs Jenkins", "H2Custom"),
+        bullet("<b>Build Now</b> : exécute immédiatement la chaîne sur la branche configurée."),
+        bullet("<b>Build with Parameters</b> : lance success, performance_failure ou secret_leak."),
+        bullet("<b>SCM local</b> : Jenkins lit le dépôt monté en lecture seule, sans compte externe."),
         p("Fail-fast", "H2Custom"),
-        p("Un code de sortie non nul marque le job en échec. GitHub Actions ignore alors tous ses descendants. Les étapes marquées <b>if: always()</b> conservent néanmoins les logs, métriques et rapports d'incident."),
+        p("Un code de sortie non nul marque le build en échec et Jenkins n'exécute pas les stages suivants. Les blocs <b>post</b> archivent néanmoins les logs, métriques et rapports d'incident puis nettoient les conteneurs temporaires."),
         PageBreak(),
     ]
 )
@@ -320,7 +320,7 @@ story.extend(
         p("Étape 2 — PyTest et couverture", "H2Custom"),
         p("Les tests unitaires couvrent le health check, la création, la validation métier, les champs obligatoires et la consultation d'un paiement. PyTest produit coverage.xml, junit.xml et pytest.log. Le Quality Gate classe ensuite la couverture selon le tableau des seuils."),
         p("Étape 3 — SonarQube Community", "H2Custom"),
-        p("Une instance éphémère est démarrée dans le runner. Son Quality Gate bloque une couverture inférieure à 70 %, tout bug ou toute vulnérabilité. Les code smells et la zone de couverture 70–80 % restent non critiques et génèrent un warning."),
+        p("Une instance éphémère est démarrée par Jenkins dans un réseau Docker isolé. Son Quality Gate bloque une couverture inférieure à 70 %, tout bug ou toute vulnérabilité. Les code smells et la zone de couverture 70–80 % restent non critiques et génèrent un warning."),
         Spacer(1, 4 * mm),
         threshold_table(),
         Spacer(1, 5 * mm),
@@ -335,23 +335,23 @@ story.extend(
     [
         p("3. Intégration, performance et déploiement", "H1Custom"),
         p("Étape 4 — Docker + Newman", "H2Custom"),
-        p("Le job charge l'image validée et démarre un conteneur éphémère. Un health check confirme la disponibilité de l'API, puis Newman vérifie les contrats HTTP et le flux création/lecture. Les cas d'erreur 400 et 404 sont aussi contrôlés. Un crash ou une assertion Newman échouée est critique."),
+        p("Le stage charge l'image validée et démarre un conteneur éphémère. Un health check confirme la disponibilité de l'API, puis Newman vérifie les contrats HTTP et le flux création/lecture. Les cas d'erreur 400 et 404 sont aussi contrôlés. Un crash ou une assertion Newman échouée est critique."),
         p("Étape 5 — k6", "H2Custom"),
         p("k6 applique 20 utilisateurs virtuels pendant 30 secondes. Il mesure le p95, les erreurs HTTP et les checks. Le taux d'erreur effectif est la valeur la plus défavorable entre erreurs HTTP et checks en échec. Les seuils critiques sont présents dans k6 et réévalués par quality_gate.py pour produire une classification claire."),
-        p("Étape 6 — publication contrôlée", "H2Custom"),
-        p("Le job de déploiement ne s'exécute que sur un push réussi vers main. Il charge l'image déjà testée, la marque avec le SHA du commit puis la publie dans GitHub Container Registry. Une branche, une Pull Request ou un lancement manuel ne peut pas publier."),
+        p("Étape 6 — déploiement local contrôlé", "H2Custom"),
+        p("Le stage de déploiement ne s'exécute que pour la branche main. Il remplace le conteneur payflex-production par l'image déjà testée, active le redémarrage automatique et valide l'API par un smoke test. Aucun registre ou compte externe n'est requis."),
         p("Analyse des logs", "H2Custom"),
         p("Après PyTest, Newman et k6, les sorties et les logs applicatifs sont scannés par Gitleaks. Une fuite dans un log est soumise au même seuil de confidentialité de 100 % que le code et l'artefact."),
         p("Rapports produits", "H2Custom"),
         Table(
             [
-                ["Job", "Rapports principaux"],
+                ["Stage", "Rapports principaux"],
                 ["Confidentialité", "gitleaks-*.json, quality-report-secrets.json"],
                 ["Unitaires", "coverage.xml, junit.xml, pytest.log"],
                 ["SonarQube", "sonar-measures.json, quality-report-sonar.json"],
                 ["Intégration", "newman-report.json, logs applicatifs"],
                 ["Performance", "k6-summary.json, k6.log, logs applicatifs"],
-                ["Erreur critique", "incident-*.md + résumé GitHub Actions"],
+                ["Erreur critique", "incident-*.md + console Jenkins"],
             ],
             colWidths=[42 * mm, 127 * mm],
             style=TableStyle(
@@ -391,14 +391,14 @@ story.extend(
         bullet("p95 supérieur à 500 ms ou taux d'erreur supérieur à 2 %."),
         bullet("Fuite dans les sources, l'historique, l'artefact ou les logs."),
         bullet("Rapport obligatoire absent ou invalide."),
-        p("Le script écrit incident-*.md, publie des erreurs GitHub et termine avec le code 1. La dépendance needs bloque alors immédiatement la suite."),
+        p("Le script écrit incident-*.md et termine avec le code 1. Jenkins marque alors le stage en échec et bloque immédiatement la suite."),
         p("Scénarios de preuve intégrés", "H2Custom"),
         Table(
             [
                 ["Entrée", "Effet", "Résultat attendu"],
                 ["success", "Aucune injection", "Pipeline vert"],
-                ["performance_failure", "Latence de test à 600 ms", "Échec au job k6"],
-                ["secret_leak", "PAN de test créé à l'exécution", "Échec au premier job"],
+                ["performance_failure", "Latence de test à 600 ms", "Échec au stage k6"],
+                ["secret_leak", "PAN de test créé à l'exécution", "Échec au premier stage"],
             ],
             colWidths=[43 * mm, 62 * mm, 64 * mm],
             style=TableStyle(
@@ -426,14 +426,14 @@ story.extend(
 story.extend(
     [
         p("5. Captures d'écran des exécutions", "H1Custom"),
-        p("Les emplacements ci-dessous doivent recevoir les captures réelles après publication du workflow corrigé. Dans GitHub Actions, lancer success, performance_failure puis secret_leak depuis Run workflow."),
-        ScreenshotPlaceholder("Capture 1 — Pipeline réussi", "Tous les jobs de validation verts ; déploiement ignoré lors du lancement manuel."),
+        p("Les emplacements ci-dessous doivent recevoir les captures réelles du serveur Jenkins local. Utiliser Build with Parameters et lancer success, performance_failure puis secret_leak."),
+        ScreenshotPlaceholder("Capture 1 — Pipeline réussi", "Tous les stages de validation verts ; déploiement exécuté sur la branche main."),
         Spacer(1, 5 * mm),
-        ScreenshotPlaceholder("Capture 2 — Échec de performance", "Job performance rouge ; p95 > 500 ms ; job deploy absent ou skipped."),
+        ScreenshotPlaceholder("Capture 2 — Échec de performance", "Stage performance rouge ; p95 > 500 ms ; déploiement non exécuté."),
         Spacer(1, 5 * mm),
-        ScreenshotPlaceholder("Capture 3 — Fuite confidentielle", "Job confidentialité rouge ; taux 0 % ; jobs suivants skipped."),
+        ScreenshotPlaceholder("Capture 3 — Fuite confidentielle", "Stage confidentialité rouge ; taux 0 % ; stages suivants ignorés."),
         Spacer(1, 5 * mm),
-        p("Note : les captures ne peuvent être produites qu'après un push et une exécution distante. Elles ne sont pas simulées dans ce rapport afin de préserver la valeur probante du livrable.", "SmallCustom"),
+        p("Note : les captures doivent provenir des builds Jenkins réellement exécutés. Elles ne sont pas simulées afin de préserver la valeur probante du livrable.", "SmallCustom"),
         PageBreak(),
     ]
 )
@@ -450,10 +450,10 @@ story.extend(
                 ["Tests de performance", "k6, p95 et taux d'erreur", "OK"],
                 ["Qualité statique", "SonarQube Community + Quality Gate", "OK"],
                 ["Confidentialité", "Gitleaks sources, artefact, logs, PII", "OK"],
-                ["Fail-fast", "needs + codes de sortie critiques", "OK"],
-                ["Rapports d'incident", "JSON, Markdown, artefacts always()", "OK"],
-                ["Déploiement conditionnel", "Image validée vers GHCR sur main", "OK"],
-                ["Captures GitHub Actions", "Trois exécutions workflow_dispatch", "À insérer"],
+                ["Fail-fast", "Stages séquentiels + codes de sortie", "OK"],
+                ["Rapports d'incident", "JSON, Markdown, archives Jenkins", "OK"],
+                ["Déploiement conditionnel", "Conteneur local validé sur main", "OK"],
+                ["Captures Jenkins", "Trois builds paramétrés", "À insérer"],
             ],
             colWidths=[55 * mm, 86 * mm, 28 * mm],
             style=TableStyle(
@@ -476,7 +476,7 @@ story.extend(
         ),
         Spacer(1, 8 * mm),
         p("Conclusion", "H2Custom"),
-        p("Le pipeline PayFlex couvre la chaîne demandée de bout en bout : construction immuable, tests multi-niveaux, analyse qualité, confidentialité à tolérance zéro, classification automatique et publication uniquement après validation complète. Les avertissements restent visibles sans interrompre le flux ; toute anomalie critique interdit le déploiement."),
+        p("Le pipeline PayFlex couvre la chaîne demandée de bout en bout : construction immuable, tests multi-niveaux, analyse qualité, confidentialité à tolérance zéro, classification automatique et déploiement local uniquement après validation complète. Les avertissements restent visibles sans interrompre le flux ; toute anomalie critique interdit le déploiement."),
     ]
 )
 

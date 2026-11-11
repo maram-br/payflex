@@ -1,137 +1,147 @@
-# PayFlex API — Pipeline CI/CD intelligent
+# PayFlex API - Pipeline CI/CD intelligent avec Jenkins
 
-PayFlex est une API REST FastAPI utilisée comme support d'un pipeline GitHub Actions avec tests multi-niveaux, analyse SonarQube, détection de données sensibles et arrêt automatique avant déploiement.
+PayFlex est une API REST FastAPI utilisée comme support d'un pipeline Jenkins local. Cette solution ne nécessite ni GitHub Actions, ni compte GitLab, ni service CI externe.
 
-## Architecture du pipeline
+## Architecture
 
 ```mermaid
 flowchart LR
-    A[Push / Pull Request / lancement manuel] --> B[1. Gitleaks + construction]
+    A[Commit ou lancement Jenkins] --> B[1. Gitleaks + build Docker]
     B --> C[2. PyTest + couverture]
     C --> D[3. SonarQube Quality Gate]
     D --> E[4. Docker + Newman]
     E --> F[5. k6 performance]
     F --> G{Branche main ?}
-    G -->|Oui| H[6. Publication GHCR]
-    G -->|Non| I[Fin CI]
-    B -. erreur critique .-> X[Arrêt + rapport d'incident]
-    C -. erreur critique .-> X
-    D -. erreur critique .-> X
-    E -. erreur critique .-> X
-    F -. erreur critique .-> X
+    G -->|Oui| H[6. Déploiement local]
+    G -->|Non| I[Fin de la CI]
+    B -. critique .-> X[Arrêt + rapport d'incident]
+    C -. critique .-> X
+    D -. critique .-> X
+    E -. critique .-> X
+    F -. critique .-> X
 ```
 
-Les jobs utilisent `needs`, donc un job critique en échec empêche automatiquement tous les jobs suivants de démarrer. L'image Docker est construite une seule fois, scannée, exportée, puis réutilisée sans reconstruction pour Newman, k6 et le déploiement.
+Les stages Jenkins sont séquentiels. Lorsqu'un stage retourne un code non nul, Jenkins arrête automatiquement les stages suivants. Les blocs `post` conservent les rapports et nettoient les conteneurs temporaires.
 
-## Déroulement détaillé
+## Installation locale de Jenkins
+
+Prérequis : Docker Desktop ou Docker Engine avec Docker Compose.
+
+```bash
+docker compose -f docker-compose.jenkins.yml up -d --build
+docker compose -f docker-compose.jenkins.yml exec jenkins \
+  cat /var/jenkins_home/secrets/initialAdminPassword
+```
+
+Ouvrir ensuite `http://localhost:8080`, saisir le mot de passe initial et installer les plugins recommandés.
+
+> Cet environnement est destiné au TP local. Le montage du socket Docker donne à Jenkins des privilèges élevés : ne pas exposer le port 8080 directement sur Internet.
+
+Créer un job **Pipeline** :
+
+1. sélectionner **Pipeline script from SCM** ;
+2. choisir **Git** ;
+3. utiliser `file:///opt/payflex-source` comme URL du dépôt ;
+4. utiliser `*/main` comme branche ;
+5. laisser `Jenkinsfile` comme chemin du script.
+
+Le dépôt est monté en lecture seule dans Jenkins. Il faut donc valider les changements avec un commit local avant l'exécution du job, mais aucun push vers une plateforme externe n'est nécessaire.
+
+## Pipeline détaillé
 
 ### 1. Confidentialité et construction
 
-Le job `secrets-scan` effectue trois contrôles avec Gitleaks :
+Le stage `Confidentialité et construction` effectue trois analyses Gitleaks :
 
 1. historique Git complet ;
-2. code source et fichiers de configuration suivis par Git ;
+2. code source et fichiers de configuration suivis ;
 3. contenu applicatif et métadonnées de l'image Docker.
 
-La configuration `.gitleaks.toml` étend les règles standards avec la détection des numéros potentiels de carte bancaire et des IBAN. Le Quality Gate applique une métrique binaire, car le nombre maximal de fuites toléré est zéro :
+La configuration `.gitleaks.toml` ajoute la détection de cartes bancaires potentielles et d'IBAN. La métrique est volontairement binaire puisque le seuil maximal toléré est zéro :
 
-- aucune fuite : taux de confidentialité = 100 %, pipeline autorisé ;
-- au moins une fuite ou rapport absent/invalide : taux = 0 %, pipeline bloqué.
+- aucune fuite : taux de confidentialité de 100 % ;
+- fuite, rapport absent ou rapport invalide : taux de 0 % et arrêt.
 
-Après validation, l'image `payflex:<SHA du commit>` est sauvegardée comme artefact GitHub Actions. Tous les jobs suivants utilisent cette même image.
+L'image `payflex:<numéro-build>` est construite une seule fois. Les stages Newman, k6 et déploiement réutilisent exactement cette image.
 
 ### 2. Tests unitaires et couverture
 
-PyTest exécute les tests de l'API et produit :
-
-- `coverage.xml` pour la couverture ;
-- `junit.xml` pour le détail des tests ;
-- `pytest.log` pour l'analyse et l'archivage.
-
-La couverture est classifiée ainsi :
+PyTest génère `coverage.xml`, `junit.xml` et `pytest.log`.
 
 | Couverture | Classification | Réaction |
 |---|---|---|
-| `>= 80 %` | Conforme | Le pipeline continue |
-| `70 % à < 80 %` | Non critique | Warning GitHub, le pipeline continue |
-| `< 70 %` | Critique | Rapport d'incident et arrêt |
+| `>= 80 %` | Conforme | Continuer |
+| `70 % à < 80 %` | Non critique | Warning |
+| `< 70 %` | Critique | Arrêt et rapport |
 
-Le log PyTest est ensuite scanné par Gitleaks. Une fuite dans le log est critique.
+Le log PyTest est ensuite analysé par Gitleaks.
 
-### 3. Analyse statique SonarQube
+### 3. Analyse SonarQube
 
-Une instance SonarQube Community éphémère est lancée dans le runner. Le pipeline crée un Quality Gate contenant les conditions critiques suivantes :
+Le pipeline lance une instance SonarQube Community éphémère et un scanner dans un réseau Docker isolé. Le Quality Gate bloque pour :
 
-- couverture inférieure à 70 % ;
+- une couverture inférieure à 70 % ;
 - au moins un bug ;
 - au moins une vulnérabilité.
 
-Les code smells et une couverture entre 70 % et 80 % sont classés comme avertissements. Ils sont écrits dans le résumé GitHub et dans un rapport JSON, sans arrêter le pipeline.
+Les code smells et la couverture comprise entre 70 % et 80 % restent des avertissements.
 
 ### 4. Tests d'intégration
 
-L'image déjà validée est chargée puis lancée dans un conteneur Docker éphémère. Newman exécute la collection Postman qui vérifie :
+L'image validée est lancée dans un conteneur éphémère. Newman contrôle :
 
-- l'état de santé de l'API ;
+- `GET /health` ;
 - la création d'un paiement ;
-- la lecture du paiement créé ;
+- la consultation du paiement créé ;
 - le refus d'un montant négatif ;
-- la réponse `404` pour un paiement inconnu.
+- la réponse 404 pour un identifiant inconnu.
 
-Un échec Newman ou un crash de l'API est critique. Les logs Newman et applicatifs sont scannés avant destruction du conteneur.
+Un crash ou un échec Newman est critique. Les logs Newman et applicatifs sont archivés et scannés.
 
 ### 5. Tests de performance
 
-k6 exécute 20 utilisateurs virtuels pendant 30 secondes. Le taux d'erreur effectif est le maximum entre le taux d'erreurs HTTP et le taux d'échec des checks k6.
+k6 exécute 20 utilisateurs virtuels pendant 30 secondes.
 
 | Indicateur | Conforme | Warning | Critique |
 |---|---:|---:|---:|
-| Latence p95 | `<= 200 ms` | `> 200 ms et <= 500 ms` | `> 500 ms` |
-| Taux d'erreur | `< 1 %` | `>= 1 % et <= 2 %` | `> 2 %` |
+| Latence p95 | `<= 200 ms` | `> 200 et <= 500 ms` | `> 500 ms` |
+| Taux d'erreur | `< 1 %` | `>= 1 et <= 2 %` | `> 2 %` |
 
-Les seuils critiques existent à la fois dans k6 et dans `quality_gate.py`. Le rapport `k6-summary.json`, les logs k6 et les logs applicatifs sont archivés et scannés.
+Le taux effectif est le maximum entre les erreurs HTTP et les checks k6 en échec. Les seuils critiques existent dans k6 et dans `quality_gate.py`.
 
-### 6. Déploiement
+### 6. Déploiement local
 
-Le déploiement n'est exécuté que pour un `push` réussi sur `main`. L'image précédemment testée est taguée avec le SHA du commit et publiée dans GitHub Container Registry :
+Le stage ne s'exécute que pour la branche `main`. Il remplace le conteneur `payflex-production`, active le redémarrage automatique et réalise un smoke test avant de déclarer le déploiement réussi.
 
-```text
-ghcr.io/<propriétaire>/<dépôt>:<sha-commit>
-```
+L'API déployée est disponible sur `http://localhost:8000` depuis la machine qui héberge Docker.
 
-Une Pull Request, une branche de test ou un lancement manuel ne déclenche jamais le déploiement.
+## Classification et rapports
 
-## Classification et fail-fast
+Une erreur non critique laisse le pipeline continuer avec un message `WARNING`. Une erreur critique crée un fichier `incident-*.md`, marque le build en échec et bloque tous les stages suivants.
 
-Une erreur non critique produit une annotation `warning` et reste visible dans le résumé du job. Une erreur critique produit une annotation `error`, un fichier `incident-*.md`, un rapport JSON et un code de sortie non nul. GitHub Actions marque alors le job en échec et ignore les jobs dépendants, notamment le déploiement.
+Jenkins archive automatiquement :
 
-Les rapports sont publiés avec `if: always()` afin de rester téléchargeables même quand un job échoue.
+- les rapports Gitleaks ;
+- `coverage.xml` et `junit.xml` ;
+- les mesures SonarQube ;
+- le rapport Newman ;
+- `k6-summary.json` ;
+- les logs et rapports d'incident.
 
-## Exécuter les trois scénarios de preuve
+## Trois scénarios pour les captures
 
-Dans GitHub : **Actions → PayFlex CI/CD → Run workflow**, sélectionner `demo_scenario` :
+Cliquer sur **Build with Parameters** et sélectionner :
 
-- `success` : exécution normale attendue au vert ;
-- `performance_failure` : ajoute 600 ms de latence uniquement dans le conteneur de test, le p95 dépasse 500 ms et le déploiement est bloqué ;
-- `secret_leak` : crée à l'exécution un numéro de carte de test dans la copie à scanner, Gitleaks le détecte et bloque immédiatement le pipeline.
+- `success` : pipeline complet attendu au vert ;
+- `performance_failure` : ajoute 600 ms de latence dans le conteneur de test et bloque au stage k6 ;
+- `secret_leak` : crée un numéro de carte de test uniquement dans la copie scannée et bloque au premier stage.
 
-Ces scénarios n'ajoutent aucun vrai secret au dépôt et n'affectent pas le comportement normal de l'API.
+Aucun vrai secret n'est ajouté au dépôt.
 
-## Exécution locale
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pytest --cov=app --cov-report=xml
-python scripts/quality_gate.py unit
-docker build -t payflex:local .
-docker run --rm -p 8000:8000 payflex:local
-```
-
-Pour k6 :
+## Arrêt de Jenkins
 
 ```bash
-k6 run -e BASE_URL=http://127.0.0.1:8000 perf/load.js
-python scripts/quality_gate.py perf
+docker compose -f docker-compose.jenkins.yml down
 ```
+
+Cette commande conserve le volume `jenkins_home`. Pour éviter toute suppression accidentelle, le projet ne fournit pas de commande automatique supprimant ce volume.
