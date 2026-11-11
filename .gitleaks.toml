@@ -7,6 +7,7 @@ useDefault = true
 id = "payflex-payment-card"
 description = "Numéro potentiel de carte bancaire (PAN)"
 regex = '''\b(?:[0-9][ -]?){13,19}\b'''
+keywords = ["card", "card_number", "credit_card", "pan", "visa", "mastercard"]
 tags = ["pii", "payment-card"]
 
 [[rules]]
