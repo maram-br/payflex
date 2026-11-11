@@ -23,6 +23,7 @@ pipeline {
         CURL_IMAGE = 'curlimages/curl:8.10.1'
         NEWMAN_IMAGE = 'postman/newman:6.2.1'
         K6_IMAGE = 'grafana/k6:0.54.0'
+        JENKINS_CONTAINER = 'payflex-jenkins'
     }
 
     stages {
@@ -47,13 +48,14 @@ pipeline {
                         printf 'demo_card=%s%s%s%s\n' '4111' '1111' '1111' '1111' > source-content/demo/pii.txt
                     fi
 
-                    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect \
-                        --source /repo --config=/repo/.gitleaks.toml --report-format json \
-                        --report-path /repo/gitleaks-history.json --exit-code 0
+                    docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
+                        "$GITLEAKS_IMAGE" detect --source "$PWD" --config="$PWD/.gitleaks.toml" \
+                        --report-format json --report-path "$PWD/gitleaks-history.json" --exit-code 0
 
-                    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect \
-                        --no-git --source /repo/source-content --config=/repo/.gitleaks.toml \
-                        --report-format json --report-path /repo/gitleaks-source.json --exit-code 0
+                    docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
+                        "$GITLEAKS_IMAGE" detect --no-git --source "$PWD/source-content" \
+                        --config="$PWD/.gitleaks.toml" --report-format json \
+                        --report-path "$PWD/gitleaks-source.json" --exit-code 0
 
                     docker build -t "$LOCAL_IMAGE" .
                     docker create --name "payflex-extract-$BUILD_NUMBER" "$LOCAL_IMAGE"
@@ -61,9 +63,10 @@ pipeline {
                     docker inspect "payflex-extract-$BUILD_NUMBER" > artifact-content/image-metadata.json
                     docker rm "payflex-extract-$BUILD_NUMBER"
 
-                    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect \
-                        --no-git --source /repo/artifact-content --config=/repo/.gitleaks.toml \
-                        --report-format json --report-path /repo/gitleaks-artifacts.json --exit-code 0
+                    docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
+                        "$GITLEAKS_IMAGE" detect --no-git --source "$PWD/artifact-content" \
+                        --config="$PWD/.gitleaks.toml" --report-format json \
+                        --report-path "$PWD/gitleaks-artifacts.json" --exit-code 0
 
                     python3 scripts/quality_gate.py secrets \
                         gitleaks-history.json gitleaks-source.json gitleaks-artifacts.json
@@ -97,9 +100,10 @@ pipeline {
                     python3 scripts/quality_gate.py unit
                     COVERAGE_STATUS=$?
 
-                    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect \
-                        --no-git --source /repo/logs --config=/repo/.gitleaks.toml \
-                        --report-format json --report-path /repo/gitleaks-unit-logs.json --exit-code 0
+                    docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
+                        "$GITLEAKS_IMAGE" detect --no-git --source "$PWD/logs" \
+                        --config="$PWD/.gitleaks.toml" --report-format json \
+                        --report-path "$PWD/gitleaks-unit-logs.json" --exit-code 0
                     python3 scripts/quality_gate.py secrets gitleaks-unit-logs.json
                     LOG_STATUS=$?
 
@@ -161,8 +165,9 @@ pipeline {
                     sonar_post "$SONAR_URL/api/qualitygates/set_as_default" -d name=PayFlex
 
                     docker run --rm --user "$(id -u):$(id -g)" --network "$CI_NETWORK" \
+                        --volumes-from "$JENKINS_CONTAINER" -w "$PWD" \
                         -e SONAR_HOST_URL="$SONAR_URL" -e SONAR_TOKEN="$TOKEN" \
-                        -v "$PWD:/usr/src" "$SONAR_SCANNER_IMAGE" \
+                        "$SONAR_SCANNER_IMAGE" \
                         -Dsonar.qualitygate.wait=true
 
                     TOKEN_CRED="$TOKEN:"
@@ -208,10 +213,10 @@ pipeline {
                     done
 
                     docker run --rm --user "$(id -u):$(id -g)" --network "$CI_NETWORK" \
-                        -v "$PWD/postman:/etc/newman" -v "$PWD/reports:/reports" "$NEWMAN_IMAGE" run \
-                        /etc/newman/payflex.postman_collection.json \
+                        --volumes-from "$JENKINS_CONTAINER" -w "$PWD" "$NEWMAN_IMAGE" run \
+                        "$PWD/postman/payflex.postman_collection.json" \
                         --env-var "baseUrl=http://$APP_NAME:8000" \
-                        --reporters cli,json --reporter-json-export /reports/newman-report.json \
+                        --reporters cli,json --reporter-json-export "$PWD/reports/newman-report.json" \
                         2>&1 | tee logs/newman.log
                 '''
             }
@@ -227,9 +232,10 @@ pipeline {
                         set +e
                         mkdir -p logs reports
                         docker logs "payflex-it-$BUILD_NUMBER" > logs/application-integration.log 2>&1
-                        docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect \
-                            --no-git --source /repo/logs --config=/repo/.gitleaks.toml \
-                            --report-format json --report-path /repo/gitleaks-integration-logs.json --exit-code 0
+                        docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
+                            "$GITLEAKS_IMAGE" detect --no-git --source "$PWD/logs" \
+                            --config="$PWD/.gitleaks.toml" --report-format json \
+                            --report-path "$PWD/gitleaks-integration-logs.json" --exit-code 0
                         python3 scripts/quality_gate.py secrets gitleaks-integration-logs.json
                         LOG_STATUS=$?
                         docker rm -f "payflex-it-$BUILD_NUMBER" >/dev/null 2>&1
@@ -265,8 +271,8 @@ pipeline {
                     done
 
                     docker run --rm --user "$(id -u):$(id -g)" --network "$CI_NETWORK" \
-                        -v "$PWD:/results" -w /results "$K6_IMAGE" run \
-                        -e "BASE_URL=http://$APP_NAME:8000" /results/perf/load.js 2>&1 | tee logs/k6.log
+                        --volumes-from "$JENKINS_CONTAINER" -w "$PWD" "$K6_IMAGE" run \
+                        -e "BASE_URL=http://$APP_NAME:8000" "$PWD/perf/load.js" 2>&1 | tee logs/k6.log
                     K6_STATUS=${PIPESTATUS[0]}
 
                     python3 scripts/quality_gate.py perf
@@ -286,9 +292,10 @@ pipeline {
                         set +e
                         mkdir -p logs reports
                         docker logs "payflex-perf-$BUILD_NUMBER" > logs/application-performance.log 2>&1
-                        docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" "$GITLEAKS_IMAGE" detect \
-                            --no-git --source /repo/logs --config=/repo/.gitleaks.toml \
-                            --report-format json --report-path /repo/gitleaks-performance-logs.json --exit-code 0
+                        docker run --rm --user "$(id -u):$(id -g)" --volumes-from "$JENKINS_CONTAINER" \
+                            "$GITLEAKS_IMAGE" detect --no-git --source "$PWD/logs" \
+                            --config="$PWD/.gitleaks.toml" --report-format json \
+                            --report-path "$PWD/gitleaks-performance-logs.json" --exit-code 0
                         python3 scripts/quality_gate.py secrets gitleaks-performance-logs.json
                         LOG_STATUS=$?
                         docker rm -f "payflex-perf-$BUILD_NUMBER" >/dev/null 2>&1
