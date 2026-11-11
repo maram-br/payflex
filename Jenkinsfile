@@ -40,8 +40,9 @@ pipeline {
                     mkdir -p source-content artifact-content reports
                     git ls-files -z | tar --null -T - -cf tracked-source.tar
                     tar -xf tracked-source.tar -C source-content
+                    DEMO_SCENARIO_VALUE="${DEMO_SCENARIO:-success}"
 
-                    if [ "$DEMO_SCENARIO" = "secret_leak" ]; then
+                    if [ "$DEMO_SCENARIO_VALUE" = "secret_leak" ]; then
                         mkdir -p source-content/demo
                         printf 'demo_card=%s%s%s%s\n' '4111' '1111' '1111' '1111' > source-content/demo/pii.txt
                     fi
@@ -246,8 +247,9 @@ pipeline {
                     set -uo pipefail
                     CI_NETWORK="payflex-perf-$BUILD_NUMBER"
                     APP_NAME="payflex-perf-$BUILD_NUMBER"
+                    DEMO_SCENARIO_VALUE="${DEMO_SCENARIO:-success}"
                     DELAY_MS=0
-                    if [ "$DEMO_SCENARIO" = "performance_failure" ]; then DELAY_MS=600; fi
+                    if [ "$DEMO_SCENARIO_VALUE" = "performance_failure" ]; then DELAY_MS=600; fi
 
                     mkdir -p logs reports
                     docker network create "$CI_NETWORK"
