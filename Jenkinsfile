@@ -21,7 +21,7 @@ pipeline {
         SONAR_IMAGE = 'sonarqube:10.6-community'
         SONAR_SCANNER_IMAGE = 'sonarsource/sonar-scanner-cli:5'
         CURL_IMAGE = 'curlimages/curl:8.10.1'
-        NEWMAN_IMAGE = 'postman/newman:6.2.1'
+        NEWMAN_IMAGE = 'postman/newman:6-alpine'
         K6_IMAGE = 'grafana/k6:0.54.0'
         JENKINS_CONTAINER = 'payflex-jenkins'
     }
