@@ -1,0 +1,16 @@
+title = "PayFlex Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "payflex-payment-card"
+description = "Numéro potentiel de carte bancaire (PAN)"
+regex = '''\b(?:[0-9][ -]?){13,19}\b'''
+tags = ["pii", "payment-card"]
+
+[[rules]]
+id = "payflex-iban"
+description = "IBAN potentiel"
+regex = '''\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b'''
+tags = ["pii", "iban"]

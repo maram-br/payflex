@@ -6,6 +6,11 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
 export const options = {
   vus: 20,
   duration: '30s',
+  thresholds: {
+    http_req_duration: ['p(95)<=500'],
+    http_req_failed: ['rate<=0.02'],
+    checks: ['rate>=0.98'],
+  },
 };
 
 export default function () {
@@ -25,8 +30,11 @@ export default function () {
 }
 
 export function handleSummary(data) {
+  const p95 = data.metrics.http_req_duration?.values?.['p(95)'] ?? 0;
+  const httpErrors = (data.metrics.http_req_failed?.values?.rate ?? 1) * 100;
+  const checkErrors = (1 - (data.metrics.checks?.values?.rate ?? 0)) * 100;
   return {
     'k6-summary.json': JSON.stringify(data),
-    stdout: `\np95 = ${data.metrics.http_req_duration.values['p(95)'].toFixed(1)} ms | erreurs = ${(data.metrics.http_req_failed.values.rate * 100).toFixed(2)} %\n`,
+    stdout: `\np95 = ${p95.toFixed(1)} ms | erreurs HTTP = ${httpErrors.toFixed(2)} % | checks en erreur = ${checkErrors.toFixed(2)} %\n`,
   };
 }

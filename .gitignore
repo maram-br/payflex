@@ -4,6 +4,11 @@ coverage.xml
 k6-summary.json
 incident-report.md 
 gitleaks.json
+reports/
+logs/
+source-content/
+artifact-content/
+payflex-image.tar
 payflex.tar
 img/
 gitleaks-artifacts.json
